@@ -6,16 +6,18 @@
 // (onglet Décisions). Modifier ce fichier ne change pas les séances déjà créées.
 // =====================================================================
 
+// Niveaux par défaut. L'animateur peut les reformuler pour une séance
+// (onglet Les 5 niveaux, en préparation, tant qu'aucun vote n'est enregistré).
 export const LEVELS = [
-  { n: 1, who: 'Directeur', title: 'Décide seul', picked: 'le directeur décide seul',
+  { n: 1, who: 'Directeur', title: 'Décide seul',
     text: 'Gestion courante, dans le cadre déjà voté : budget, plan de formation, grille tarifaire.' },
-  { n: 2, who: 'Directeur', title: 'Décide, puis informe', picked: 'le directeur décide, puis informe',
+  { n: 2, who: 'Directeur', title: 'Décide, puis informe',
     text: 'Les associés sont informés dans le reporting périodique (tableau de bord mensuel ou trimestriel).' },
-  { n: 3, who: 'Président', title: 'Décide, informe et explique', picked: 'le Président décide, informe et explique',
+  { n: 3, who: 'Président', title: 'Décide, informe et explique',
     text: 'Information rapide et motivée des associés après la décision : ce qui a été décidé, et pourquoi.' },
-  { n: 4, who: 'Président', title: 'Consulte avant de décider', picked: 'le Président consulte avant de décider',
+  { n: 4, who: 'Président', title: 'Consulte avant de décider',
     text: 'Les associés donnent leur avis avant la décision, sans vote. Le Président tranche.' },
-  { n: 5, who: 'Associés', title: 'Votent', picked: 'les associés votent',
+  { n: 5, who: 'Associés', title: 'Votent',
     text: "Décision collective, en réunion d'associés ou en AG." },
 ]
 

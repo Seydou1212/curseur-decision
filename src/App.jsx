@@ -13,6 +13,32 @@ const lv = n => `var(--l${n})`
 const fmt = n => (Number.isInteger(n) ? String(n) : n.toFixed(1).replace('.', ','))
 const plural = (n, s, p) => (n > 1 ? p : s)
 const domainName = id => DOMAINS.find(D => D.id === id)?.name || 'Autres'
+const lcfirst = s => s.charAt(0).toLowerCase() + s.slice(1)
+
+// Niveaux de la séance : ceux enregistrés en base, sinon ceux de decisions.js
+function sessionLevels(custom) {
+  return LEVELS.map((L, i) => {
+    const c = Array.isArray(custom) ? custom[i] : null
+    return { n: L.n, who: c?.who || L.who, title: c?.title || L.title, text: c ? c.text || '' : L.text }
+  })
+}
+
+// Niveaux voisins qui ont le même « qui décide » : [{ who, ns: [1, 2] }, ...]
+function levelGroups(levels) {
+  const groups = []
+  levels.forEach(L => {
+    const last = groups[groups.length - 1]
+    if (last && last.who === L.who) last.ns.push(L.n)
+    else groups.push({ who: L.who, ns: [L.n] })
+  })
+  return groups
+}
+
+function rangeLabel(ns) {
+  if (ns.length === 1) return `niveau ${ns[0]}`
+  if (ns.length === 2) return `niveaux ${ns[0]} et ${ns[1]}`
+  return `niveaux ${ns[0]} à ${ns[ns.length - 1]}`
+}
 
 const PHASES = [
   { id: 'preparation', label: 'Préparation', hint: 'Discussion. Les associés voient la liste, sans voter.' },
@@ -158,17 +184,22 @@ function Tabs({ tabs, active, onChange }) {
   )
 }
 
-function Legend() {
+// Couleur d'un groupe : le niveau 3 (orange) s'il en fait partie, sinon le plus haut
+const groupColor = ns => lv(ns.includes(3) ? 3 : ns[ns.length - 1])
+
+function Legend({ levels }) {
   return (
     <div className="legend" aria-hidden="true">
-      <div className="d">Directeur<small>niveaux 1 et 2</small></div>
-      <div className="p">Président<small>niveaux 3 et 4</small></div>
-      <div className="a">Associés<small>niveau 5</small></div>
+      {levelGroups(levels).map(g => (
+        <div key={g.ns[0]} style={{ gridColumn: `span ${g.ns.length}`, borderColor: groupColor(g.ns) }}>
+          {g.who}<small>{rangeLabel(g.ns)}</small>
+        </div>
+      ))}
     </div>
   )
 }
 
-function Rail({ decision, value, onPick, disabled }) {
+function Rail({ decision, levels, value, onPick, disabled }) {
   const fillStyle = value ? { width: `${(value - 1) * 20}%`, background: lv(value) } : { width: 0 }
   return (
     <div className={`dec ${disabled ? 'locked' : ''}`}>
@@ -176,7 +207,7 @@ function Rail({ decision, value, onPick, disabled }) {
       <div className="rail" role="radiogroup" aria-label={decision.label} aria-disabled={disabled || undefined}>
         <span className="track" />
         <span className="fill" style={fillStyle} />
-        {LEVELS.map(L => (
+        {levels.map(L => (
           <button
             key={L.n}
             type="button"
@@ -191,29 +222,29 @@ function Rail({ decision, value, onPick, disabled }) {
         ))}
       </div>
       <p className="picked">
-        {value ? <>Niveau {value} : <b>{LEVELS[value - 1].picked}</b></> : disabled ? '' : 'Pas encore de choix'}
+        {value ? <>Niveau {value} : <b>{levels[value - 1].who}, {lcfirst(levels[value - 1].title)}</b></> : disabled ? '' : 'Pas encore de choix'}
       </p>
     </div>
   )
 }
 
-function DecisionList({ decisions, answers, onPick, disabled }) {
+function DecisionList({ decisions, levels, answers, onPick, disabled }) {
   const { tests, groups } = groupDecisions(decisions)
   const domainBlocks = groups.map(g => (
     <div key={g.id}>
       <h3>{g.name}</h3>
-      {g.list.map(d => <Rail key={d.id} decision={d} value={answers[d.id]} onPick={onPick} disabled={disabled} />)}
+      {g.list.map(d => <Rail key={d.id} decision={d} levels={levels} value={answers[d.id]} onPick={onPick} disabled={disabled} />)}
     </div>
   ))
   if (!decisions.length) return <div className="note quiet">Aucune décision pour l'instant.</div>
   return (
     <>
-      <Legend />
+      <Legend levels={levels} />
       {tests.length > 0 ? (
         <>
           <h2>{tests.length > 1 ? `Les ${tests.length} décisions de l'atelier` : "La décision de l'atelier"}</h2>
           <p className="sub">Réponds au moins à {plural(tests.length, 'celle-ci', 'celles-ci')}.</p>
-          {tests.map(d => <Rail key={d.id} decision={d} value={answers[d.id]} onPick={onPick} disabled={disabled} />)}
+          {tests.map(d => <Rail key={d.id} decision={d} levels={levels} value={answers[d.id]} onPick={onPick} disabled={disabled} />)}
           {groups.length > 0 && (
             <details className="more">
               <summary>Toutes les autres décisions</summary>
@@ -313,16 +344,97 @@ function Results({ decisions, counts, voters }) {
   )
 }
 
-function LevelsRef() {
+function LevelForm({ level, busy, onSubmit, onCancel }) {
+  const [who, setWho] = useState(level.who)
+  const [title, setTitle] = useState(level.title)
+  const [text, setText] = useState(level.text)
+  const submit = e => {
+    e.preventDefault()
+    if (who.trim() && title.trim()) onSubmit({ who: who.trim(), title: title.trim(), text: text.trim() })
+  }
+  return (
+    <form className="ed-form" onSubmit={submit}>
+      <div className="ed-fields">
+        <label className="field grow">
+          <span>Qui décide</span>
+          <input value={who} maxLength={40} autoFocus onChange={e => setWho(e.target.value)} />
+        </label>
+        <label className="field grow wide">
+          <span>Titre</span>
+          <input value={title} maxLength={80} onChange={e => setTitle(e.target.value)} />
+        </label>
+      </div>
+      <label className="field" style={{ marginTop: '.7rem' }}>
+        <span>Explication</span>
+        <textarea className="plain" rows={2} value={text} maxLength={300} onChange={e => setText(e.target.value)} />
+      </label>
+      <div className="actions">
+        <button className="btn" type="submit" disabled={busy || !who.trim() || !title.trim()}>Enregistrer</button>
+        <button className="btn ghost" type="button" onClick={onCancel}>Annuler</button>
+      </div>
+    </form>
+  )
+}
+
+function LevelRow({ L, canEdit, editing, busy, onEdit, onSave, onCancel }) {
+  if (editing) {
+    return (
+      <div className="lvl editing" style={{ '--lv': lv(L.n) }}>
+        <div className="num">{L.n}</div>
+        <LevelForm level={L} busy={busy} onSubmit={onSave} onCancel={onCancel} />
+      </div>
+    )
+  }
+  return (
+    <div className="lvl" style={{ '--lv': lv(L.n) }}>
+      <div className="num">{L.n}</div>
+      <div><span className="who">{L.who}</span><h4>{L.title}</h4>{L.text && <p>{L.text}</p>}</div>
+      {canEdit && <button className="icon-btn" type="button" aria-label={`Modifier le niveau ${L.n}`} title="Modifier" disabled={busy} onClick={onEdit}>✎</button>}
+    </div>
+  )
+}
+
+// edit (animateur seulement) : { state: 'editable' | 'phase' | 'votes', custom, busy, onSave(niveaux | null) }
+function LevelsRef({ levels, edit }) {
+  const [editing, setEditing] = useState(null)
+  const [armed, arm] = useTwoStep()
+  const canEdit = edit?.state === 'editable'
+  useEffect(() => { if (!canEdit) { setEditing(null); arm(null) } }, [canEdit, arm])
+
+  const save = n => async values => {
+    const next = levels.map(L => (L.n === n ? values : { who: L.who, title: L.title, text: L.text }))
+    if (await edit.onSave(next)) setEditing(null)
+  }
+  const reset = async () => {
+    if (!armed) { arm(true); return }
+    arm(null)
+    await edit.onSave(null)
+  }
+
   return (
     <>
       <h2 style={{ marginTop: '.4rem' }}>Les 5 niveaux</h2>
-      {LEVELS.map(L => (
-        <div className="lvl" key={L.n} style={{ '--lv': lv(L.n) }}>
-          <div className="num">{L.n}</div>
-          <div><span className="who">{L.who}</span><h4>{L.title}</h4><p>{L.text}</p></div>
-        </div>
+      {edit?.state === 'phase' && <p className="sub">Les niveaux se modifient en phase de préparation, avant le vote.</p>}
+      {edit?.state === 'votes' && <p className="sub">Des votes sont enregistrés : les niveaux ne se modifient plus.</p>}
+      {levels.map(L => (
+        <LevelRow
+          key={L.n}
+          L={L}
+          canEdit={canEdit}
+          editing={editing === L.n}
+          busy={edit?.busy}
+          onEdit={() => setEditing(L.n)}
+          onSave={save(L.n)}
+          onCancel={() => setEditing(null)}
+        />
       ))}
+      {canEdit && edit.custom && (
+        <div className="actions">
+          <button className={`btn danger ${armed ? 'arm' : ''}`} type="button" disabled={edit.busy} onClick={reset}>
+            {armed ? 'Confirmer : revenir aux niveaux par défaut' : 'Revenir aux niveaux par défaut'}
+          </button>
+        </div>
+      )}
       <h2>Règles transverses</h2>
       <div className="rule"><h4>Conflit d'intérêts</h4><p>Toute décision qui concerne personnellement le Président-directeur (rémunération, conditions de travail, contrat avec une structure où il a des intérêts) monte au minimum au niveau 4.</p></div>
       <div className="rule"><h4>Urgence</h4><p>En cas d'urgence, le directeur ou le Président peut agir au-delà de son niveau, avec information des associés sous 48 h.</p></div>
@@ -414,6 +526,7 @@ function VotePage({ code }) {
   const [status, setStatus] = useState('loading') // loading | ok | missing | error
   const [phase, setPhase] = useState(null)
   const [decisions, setDecisions] = useState([])
+  const [levels, setLevels] = useState(() => sessionLevels(null))
   const [answers, setAnswers] = useState({})
   const [saved, setSaved] = useState(null)
   const [saving, setSaving] = useState(false)
@@ -431,6 +544,7 @@ function VotePage({ code }) {
     if (!s || !s.exists) return
     setPhase(s.phase)
     setDecisions(s.decisions)
+    setLevels(sessionLevels(s.levels))
   }, [])
 
   useEffect(() => {
@@ -552,7 +666,7 @@ function VotePage({ code }) {
             {phase === 'preparation' && <div className="note">Discussion en cours. La liste peut encore changer, elle se met à jour toute seule. Le vote s'ouvrira quand l'animateur le décidera.</div>}
             {phase === 'resultats' && <div className="note quiet">Le vote est clos. Les résultats sont dans l'onglet Résultats.</div>}
             {notice && <div className="note error">{notice}</div>}
-            <DecisionList decisions={decisions} answers={answers} onPick={onPick} disabled={!open} />
+            <DecisionList decisions={decisions} levels={levels} answers={answers} onPick={onPick} disabled={!open} />
           </>
         )}
         {tab === 'results' && (
@@ -561,7 +675,7 @@ function VotePage({ code }) {
             ? <Results decisions={decisions} counts={results.counts} voters={results.voters} />
             : <div className="note quiet">{results.voters} {plural(results.voters, 'associé a voté', 'associés ont voté')}. Les résultats s'afficheront ici quand l'animateur les révélera.</div>
         )}
-        {tab === 'levels' && <LevelsRef />}
+        {tab === 'levels' && <LevelsRef levels={levels} />}
       </div></main>
       {tab === 'vote' && (
         <div className="bar-bottom"><div className="wrap">
@@ -592,7 +706,7 @@ function PhaseControl({ phase, onSet, busy }) {
   )
 }
 
-function DecisionForm({ initial, votes = 0, submitLabel, onSubmit, onCancel, busy, autoFocus }) {
+function DecisionForm({ initial, levels, votes = 0, submitLabel, onSubmit, onCancel, busy, autoFocus }) {
   const [label, setLabel] = useState(initial.label)
   const [domain, setDomain] = useState(initial.domain)
   const [prop, setProp] = useState(initial.prop ? String(initial.prop) : '')
@@ -636,7 +750,7 @@ function DecisionForm({ initial, votes = 0, submitLabel, onSubmit, onCancel, bus
           <span>Niveau proposé</span>
           <select value={prop} onChange={e => setProp(e.target.value)}>
             <option value="">Aucun</option>
-            {LEVELS.map(L => <option key={L.n} value={L.n}>{L.n} : {L.who.toLowerCase()}, {L.title.toLowerCase()}</option>)}
+            {levels.map(L => <option key={L.n} value={L.n}>{L.n} : {L.who}, {lcfirst(L.title)}</option>)}
           </select>
         </label>
         <label className="check">
@@ -656,11 +770,11 @@ function DecisionForm({ initial, votes = 0, submitLabel, onSubmit, onCancel, bus
   )
 }
 
-function EditorRow({ d, first, last, editable, showProps, showDomain, busy, editing, armed, onEdit, onCancel, onSave, onMove, onDelete }) {
+function EditorRow({ d, levels, first, last, editable, showProps, showDomain, busy, editing, armed, onEdit, onCancel, onSave, onMove, onDelete }) {
   if (editing) {
     return (
       <div className="ed-row editing">
-        <DecisionForm initial={d} votes={d.votes} submitLabel="Enregistrer" onSubmit={onSave} onCancel={onCancel} busy={busy} autoFocus />
+        <DecisionForm initial={d} levels={levels} votes={d.votes} submitLabel="Enregistrer" onSubmit={onSave} onCancel={onCancel} busy={busy} autoFocus />
       </div>
     )
   }
@@ -689,7 +803,7 @@ function EditorRow({ d, first, last, editable, showProps, showDomain, busy, edit
   )
 }
 
-function Editor({ decisions, phase, busy, act, onPhase }) {
+function Editor({ decisions, levels, phase, busy, act, onPhase }) {
   const [editing, setEditing] = useState(null)
   const [adding, setAdding] = useState(false)
   const [showProps, setShowProps] = useState(() => store('curseur-show-props') === true)
@@ -716,6 +830,7 @@ function Editor({ decisions, phase, busy, act, onPhase }) {
     <EditorRow
       key={d.id}
       d={d}
+      levels={levels}
       first={i === 0}
       last={i === list.length - 1}
       editable={editable}
@@ -767,6 +882,7 @@ function Editor({ decisions, phase, busy, act, onPhase }) {
           <div className="card add-card">
             <h2>Ajouter une décision</h2>
             <DecisionForm
+              levels={levels}
               initial={{ label: '', domain: DOMAINS[0].id, prop: null, test: false }}
               submitLabel="Ajouter"
               onSubmit={add}
@@ -803,7 +919,7 @@ function AdminPage({ code, adminKey }) {
     try {
       const params = { p_code: code, p_admin_key: adminKey || null }
       const [res, s] = await Promise.all([rpc('curseur_results', params), rpc('curseur_session', params)])
-      setData({ ...res, phase: s.phase, decisions: s.decisions || [] })
+      setData({ ...res, phase: s.phase, decisions: s.decisions || [], levels: sessionLevels(s.levels), levelsCustom: !!s.levels, levelsLocked: !!s.levels_locked })
       setLoadError('')
     } catch (err) { setLoadError(err.message) }
   }, [code, adminKey])
@@ -884,14 +1000,24 @@ function AdminPage({ code, adminKey }) {
             </div>
           </>
         )}
-        {tab === 'decisions' && <Editor decisions={data.decisions} phase={data.phase} busy={busy} act={act} onPhase={setPhase} />}
+        {tab === 'decisions' && <Editor decisions={data.decisions} levels={data.levels} phase={data.phase} busy={busy} act={act} onPhase={setPhase} />}
         {tab === 'results' && (
           <>
             {data.phase !== 'resultats' && <div className="note">Tu es seul à voir ces résultats. Passe en phase Résultats depuis l'onglet Séance quand tout le monde a voté.</div>}
             <Results decisions={data.decisions} counts={data.counts} voters={data.voters} />
           </>
         )}
-        {tab === 'levels' && <LevelsRef />}
+        {tab === 'levels' && (
+          <LevelsRef
+            levels={data.levels}
+            edit={{
+              state: data.phase !== 'preparation' ? 'phase' : data.levelsLocked ? 'votes' : 'editable',
+              custom: data.levelsCustom,
+              busy,
+              onSave: next => act('curseur_set_levels', { p_levels: next }),
+            }}
+          />
+        )}
       </div></main>
     </>
   )

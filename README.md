@@ -15,11 +15,13 @@ Stack identique à jury-cqp : React + Vite, Supabase, Vercel.
 
 | Phase | Associés | Animateur |
 |---|---|---|
-| **Préparation** | voient la liste se mettre à jour, sans pouvoir voter | ajoute, modifie, supprime, réordonne les décisions |
+| **Préparation** | voient la liste et les niveaux se mettre à jour, sans pouvoir voter | ajoute, modifie, supprime, réordonne les décisions ; reformule les 5 niveaux |
 | **Vote ouvert** | votent | liste verrouillée, suit le compteur |
 | **Résultats** | voient les résultats et les niveaux proposés | idem |
 
 L'animateur peut revenir en arrière à tout moment (onglet **Séance**). En préparation, modifier le **libellé** d'une décision déjà votée, ou la supprimer, efface ses votes : l'appli prévient et demande confirmation. Changer le domaine, le niveau proposé, la case « atelier » ou l'ordre n'efface rien.
+
+Les **5 niveaux** (qui décide, titre, explication) se reformulent dans l'onglet **Les 5 niveaux**, en préparation, **tant qu'aucun vote n'est enregistré**. Dès le premier vote, ils sont verrouillés pour la séance : un vote ne change jamais de sens. Le nombre de niveaux et leurs couleurs restent fixes.
 
 ## Mise en place (environ 15 minutes)
 
@@ -34,6 +36,7 @@ L'animateur peut revenir en arrière à tout moment (onglet **Séance**). En pr�
 | Migration | Contenu |
 |---|---|
 | `001_decisions_par_seance.sql` | décisions stockées par séance, phases Préparation / Vote ouvert / Résultats. Les séances existantes passent en « Vote ouvert » (ou « Résultats » si elles étaient révélées) et gardent leurs votes. |
+| `002_niveaux_par_seance.sql` | niveaux modifiables par séance. Les séances existantes gardent les niveaux par défaut. |
 
 ### 2. GitHub
 1. Crée un dépôt vide, par exemple `curseur-decision`.
@@ -65,11 +68,12 @@ npm run dev
 1. Ouvre l'appli, clique sur **Créer une séance**. Tu arrives sur la page animateur : **garde ce lien** (il est aussi listé sur l'accueil de ton appareil). La séance démarre en **Préparation**, avec la liste par défaut.
 2. Projette l'onglet **Séance** : les associés scannent le QR code ou saisissent le code.
 3. Projette l'onglet **Décisions** et ajuste la liste avec les associés : ajouter, modifier (✎), supprimer (deux clics), monter ou descendre. Les niveaux proposés y sont masqués ; la case « Afficher les niveaux proposés » les montre, à ne cocher que sur ton écran.
-4. Clique sur **Ouvrir le vote** (en bas de l'onglet Décisions, ou dans l'onglet Séance). Suis le compteur de votants.
-5. Quand tout le monde a voté, passe en phase **Résultats** et projette l'onglet **Résultats**.
+4. Si besoin, reformule les niveaux avec les associés dans l'onglet **Les 5 niveaux** (✎ sur chaque niveau). C'est possible jusqu'au premier vote.
+5. Clique sur **Ouvrir le vote** (en bas de l'onglet Décisions, ou dans l'onglet Séance). Suis le compteur de votants.
+6. Quand tout le monde a voté, passe en phase **Résultats** et projette l'onglet **Résultats**.
 
 Astuce : fais une séance de test avant la réunion, puis crée une séance neuve pour le jour J.
 
 ## Modifier la liste par défaut
-Chaque nouvelle séance est pré-remplie avec la liste de `src/decisions.js` (`DEFAULT_DECISIONS`) : libellés, niveau proposé (`prop`), décisions de l'atelier (`test: true`).
+Chaque nouvelle séance est pré-remplie avec la liste de `src/decisions.js` (`DEFAULT_DECISIONS`) et utilise ses niveaux (`LEVELS`) : libellés, niveau proposé (`prop`), décisions de l'atelier (`test: true`).
 Modifier ce fichier ne change pas les séances déjà créées : pendant une séance, on passe par l'onglet **Décisions**.

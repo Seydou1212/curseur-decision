@@ -42,9 +42,6 @@ main{padding:1.2rem 0 7rem}
 
 .legend{display:grid;grid-template-columns:repeat(5,1fr);gap:4px;margin:0 0 1.4rem}
 .legend div{padding-top:.4rem;border-top:4px solid;font-family:var(--cond);font-weight:600;font-size:1rem}
-.legend .d{grid-column:span 2;border-color:var(--l2)}
-.legend .p{grid-column:span 2;border-color:var(--l3)}
-.legend .a{border-color:var(--l5)}
 .legend small{display:block;font-family:var(--sans);font-weight:400;font-size:.8rem;color:var(--ink-2)}
 
 h2{font-family:var(--cond);font-weight:700;font-size:1.6rem;line-height:1.1;margin:1.6rem 0 .3rem}
@@ -110,7 +107,7 @@ details.more[open] summary::before{content:"–"}
 .key i{display:inline-block;width:18px;height:18px;border-radius:50%;border:2px solid var(--orange)}
 .actions{display:flex;flex-wrap:wrap;gap:.6rem;margin:1rem 0}
 
-.lvl{display:grid;grid-template-columns:3.2rem 1fr;gap:.9rem;background:var(--surface);border:1px solid var(--line-2);border-radius:10px;padding:1rem;margin-bottom:.6rem}
+.lvl{display:grid;grid-template-columns:3.2rem 1fr auto;align-items:start;gap:.9rem;background:var(--surface);border:1px solid var(--line-2);border-radius:10px;padding:1rem;margin-bottom:.6rem}
 .lvl .num{width:3.2rem;height:3.2rem;border-radius:50%;background:var(--lv);color:var(--on-level);display:flex;align-items:center;justify-content:center;font-family:var(--cond);font-weight:700;font-size:1.7rem}
 .lvl h4{margin:0;font-size:1.05rem}
 .lvl .who{font-family:var(--cond);font-weight:600;color:var(--lv);font-size:1rem}
@@ -168,6 +165,12 @@ details.more[open] summary::before{content:"–"}
 .field textarea{width:100%;resize:vertical;font-size:1.15rem;font-weight:600;line-height:1.35}
 .field textarea:focus,.field select:focus{border-color:var(--orange);outline:none}
 .add-card{margin-top:1.4rem}
+.lvl.editing{grid-template-columns:3.2rem 1fr;border-color:var(--orange)}
+.field input{padding:.55rem .7rem;border:2px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-size:1rem}
+.field input:focus{border-color:var(--orange);outline:none}
+.field.grow{flex:1 1 12rem}
+.field.grow.wide{flex-grow:2}
+.field textarea.plain{font-size:1rem;font-weight:400}
 .editor .add-card h2{margin-top:0}
 
 @media (max-width:620px){

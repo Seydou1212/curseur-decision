@@ -8,14 +8,18 @@
 -- =====================================================================
 
 -- phase : preparation (édition de la liste) | vote (vote ouvert) | resultats
+-- levels : définition des 5 niveaux propre à la séance
+--          [{ who, title, text }, ...] ; null = niveaux par défaut de l'appli
 create table if not exists public.curseur_sessions (
   id          uuid primary key default gen_random_uuid(),
   code        text unique not null,
   admin_key   text not null,
   phase       text not null default 'preparation'
               check (phase in ('preparation', 'vote', 'resultats')),
+  levels      jsonb,
   created_at  timestamptz not null default now()
 );
+alter table public.curseur_sessions add column if not exists levels jsonb;
 
 -- Décisions propres à chaque séance.
 -- key : identifiant stable, utilisé comme clé dans curseur_votes.answers
@@ -176,10 +180,11 @@ end;
 $$;
 
 -- ---------------------------------------------------------------------
--- État public d'une séance : phase et liste des décisions.
+-- État public d'une séance : phase, niveaux et liste des décisions.
 -- Le niveau proposé (prop) n'est renvoyé qu'en phase "resultats"
 -- ou à l'animateur. L'animateur reçoit aussi le nombre de votes
 -- par décision (pour avertir avant un effacement).
+-- levels_locked : des votes existent, les niveaux ne se modifient plus.
 -- ---------------------------------------------------------------------
 create or replace function public.curseur_session(p_code text, p_admin_key text default null)
 returns json
@@ -217,6 +222,8 @@ begin
     'exists', true,
     'is_admin', is_admin,
     'phase', s.phase,
+    'levels', s.levels,
+    'levels_locked', exists (select 1 from curseur_votes v where v.session_id = s.id and v.answers <> '{}'::jsonb),
     'decisions', list
   );
 end;
@@ -467,6 +474,50 @@ begin
 end;
 $$;
 
+-- Remplacer la définition des 5 niveaux (p_levels = null : niveaux par défaut).
+-- Seulement en préparation, et tant qu'aucun vote n'est enregistré :
+-- un vote ne doit jamais changer de sens.
+create or replace function public.curseur_set_levels(p_code text, p_admin_key text, p_levels jsonb)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  s curseur_sessions%rowtype;
+  clean jsonb := '[]'::jsonb;
+  e jsonb;
+  w text;
+  t text;
+  x text;
+begin
+  s := curseur_admin_editable(p_code, p_admin_key);
+  if exists (select 1 from curseur_votes v where v.session_id = s.id and v.answers <> '{}'::jsonb) then
+    raise exception 'Des votes sont déjà enregistrés : les niveaux ne se modifient plus';
+  end if;
+
+  if p_levels is not null and jsonb_typeof(p_levels) <> 'null' then
+    if jsonb_typeof(p_levels) <> 'array' or jsonb_array_length(p_levels) <> 5 then
+      raise exception 'Il faut exactement 5 niveaux';
+    end if;
+    for e in select value from jsonb_array_elements(p_levels) loop
+      if jsonb_typeof(e) <> 'object' then raise exception 'Niveau invalide'; end if;
+      w := btrim(regexp_replace(coalesce(e->>'who', ''), '\s+', ' ', 'g'));
+      t := btrim(regexp_replace(coalesce(e->>'title', ''), '\s+', ' ', 'g'));
+      x := btrim(coalesce(e->>'text', ''));
+      if length(w) not between 1 and 40 then raise exception 'Le « qui décide » doit faire de 1 à 40 caractères'; end if;
+      if length(t) not between 1 and 80 then raise exception 'Le titre d''un niveau doit faire de 1 à 80 caractères'; end if;
+      if length(x) > 300 then raise exception 'L''explication d''un niveau dépasse 300 caractères'; end if;
+      clean := clean || jsonb_build_array(jsonb_build_object('who', w, 'title', t, 'text', x));
+    end loop;
+  else
+    clean := null;
+  end if;
+
+  update curseur_sessions set levels = clean where id = s.id;
+end;
+$$;
+
 -- Effacer tous les votes ; si les résultats étaient affichés, on revient au vote
 create or replace function public.curseur_reset(p_code text, p_admin_key text)
 returns void
@@ -503,3 +554,4 @@ grant execute on function public.curseur_update_decision(text, text, text, text,
 grant execute on function public.curseur_delete_decision(text, text, text) to anon, authenticated;
 grant execute on function public.curseur_move_decision(text, text, text, int) to anon, authenticated;
 grant execute on function public.curseur_reset(text, text) to anon, authenticated;
+grant execute on function public.curseur_set_levels(text, text, jsonb) to anon, authenticated;
