@@ -1,8 +1,9 @@
 // =====================================================================
-// Contenu du curseur : niveaux, domaines et décisions.
-// Pour modifier une décision ou un niveau proposé, c'est ici.
-// ⚠️ Ne change pas l'"id" d'une décision pendant une séance en cours :
-//    les votes déjà enregistrés y sont rattachés.
+// Contenu du curseur : niveaux, domaines et liste de décisions par défaut.
+// Les décisions sont stockées en base, séance par séance : la liste
+// ci-dessous sert seulement à pré-remplir chaque NOUVELLE séance.
+// Pendant une séance, l'animateur modifie la liste depuis l'appli
+// (onglet Décisions). Modifier ce fichier ne change pas les séances déjà créées.
 // =====================================================================
 
 export const LEVELS = [
@@ -26,9 +27,10 @@ export const DOMAINS = [
   { id: 'strategie', name: 'Stratégie et structure' },
 ]
 
-// prop = niveau proposé (affiché seulement dans les résultats)
+// id = identifiant stable (lettres, chiffres, - et _ ; 60 caractères au plus)
+// prop = niveau proposé (affiché aux associés seulement dans les résultats)
 // test = fait partie des décisions de l'atelier
-export const DECISIONS = [
+export const DEFAULT_DECISIONS = [
   // Décisions de l'atelier
   { id: 'rh-cdi', domain: 'rh', prop: 2, test: true, label: 'Embaucher en CDI sur un poste prévu au budget' },
   { id: 'rh-rupture', domain: 'rh', prop: 3, test: true, label: 'Licencier ou signer une rupture conventionnelle' },
@@ -74,5 +76,3 @@ export const DECISIONS = [
   { id: 'str-immo', domain: 'strategie', prop: 5, label: 'Réaliser une acquisition immobilière (bâtiment de Creissels)' },
   { id: 'str-filiale', domain: 'strategie', prop: 5, label: 'Créer une filiale ou prendre une participation' },
 ]
-
-export const TESTS = DECISIONS.filter(d => d.test)

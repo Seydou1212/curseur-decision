@@ -1,25 +1,43 @@
 -- =====================================================================
--- Curseur de décision – schéma Supabase (état complet à jour)
--- Nouvelle installation : à exécuter une fois dans Supabase > SQL Editor.
--- Installation existante : exécuter plutôt les fichiers de
--- supabase/migrations/ qui n'ont pas encore été passés.
--- Les tables sont préfixées "curseur_" : tu peux donc réutiliser un
--- projet Supabase existant (celui de jury-cqp par exemple) sans conflit.
+-- Migration 001 : décisions propres à chaque séance, phases de séance
+-- À exécuter UNE fois dans Supabase > SQL Editor, sur une installation
+-- qui utilise encore l'ancien schéma (colonne "revealed").
+-- Tout se fait dans une transaction : en cas d'erreur, rien n'est modifié.
+--
+-- Ce que fait la migration :
+--   1. remplace la colonne "revealed" par "phase" :
+--        revealed = true  -> 'resultats'
+--        revealed = false -> 'vote'  (les séances existantes restent ouvertes au vote)
+--   2. crée la table curseur_decisions et y copie, pour chaque séance
+--      existante, la liste par défaut (mêmes identifiants : les votes déjà
+--      enregistrés restent rattachés à leur décision) ;
+--   3. remplace les fonctions (curseur_set_reveal et curseur_session_info
+--      disparaissent, au profit de curseur_set_phase et curseur_session).
 -- =====================================================================
 
--- phase : preparation (édition de la liste) | vote (vote ouvert) | resultats
-create table if not exists public.curseur_sessions (
-  id          uuid primary key default gen_random_uuid(),
-  code        text unique not null,
-  admin_key   text not null,
-  phase       text not null default 'preparation'
-              check (phase in ('preparation', 'vote', 'resultats')),
-  created_at  timestamptz not null default now()
-);
+begin;
 
--- Décisions propres à chaque séance.
--- key : identifiant stable, utilisé comme clé dans curseur_votes.answers
--- prop : niveau proposé (jamais renvoyé aux associés avant les résultats)
+-- 1. Phase de séance -------------------------------------------------
+alter table public.curseur_sessions
+  add column if not exists phase text not null default 'preparation';
+
+do $$
+begin
+  if exists (select 1 from information_schema.columns
+              where table_schema = 'public' and table_name = 'curseur_sessions'
+                and column_name = 'revealed') then
+    update public.curseur_sessions
+       set phase = case when revealed then 'resultats' else 'vote' end;
+    alter table public.curseur_sessions drop column revealed;
+  end if;
+end;
+$$;
+
+alter table public.curseur_sessions drop constraint if exists curseur_sessions_phase_check;
+alter table public.curseur_sessions
+  add constraint curseur_sessions_phase_check check (phase in ('preparation', 'vote', 'resultats'));
+
+-- 2. Décisions par séance --------------------------------------------
 create table if not exists public.curseur_decisions (
   id          uuid primary key default gen_random_uuid(),
   session_id  uuid not null references public.curseur_sessions(id) on delete cascade,
@@ -31,23 +49,53 @@ create table if not exists public.curseur_decisions (
   position    int not null default 0,
   unique (session_id, key)
 );
-
-create table if not exists public.curseur_votes (
-  id           uuid primary key default gen_random_uuid(),
-  session_id   uuid not null references public.curseur_sessions(id) on delete cascade,
-  voter_token  text not null,
-  answers      jsonb not null default '{}'::jsonb,
-  updated_at   timestamptz not null default now(),
-  unique (session_id, voter_token)
-);
-
--- Sécurité : RLS activée SANS aucune policy.
--- Personne ne lit ni n'écrit directement dans les tables :
--- tout passe par les fonctions ci-dessous (security definer).
--- Les votes individuels ne sont donc jamais lisibles, seuls les totaux.
-alter table public.curseur_sessions enable row level security;
 alter table public.curseur_decisions enable row level security;
-alter table public.curseur_votes enable row level security;
+
+-- Liste par défaut au moment de la migration (copie de src/decisions.js)
+insert into public.curseur_decisions (session_id, key, label, domain, prop, test, position)
+select s.id, d.key, d.label, d.domain, d.prop, d.test, d.position
+  from public.curseur_sessions s
+ cross join (values
+    ('rh-cdi', 'Embaucher en CDI sur un poste prévu au budget', 'rh', 2, true, 1),
+    ('rh-rupture', 'Licencier ou signer une rupture conventionnelle', 'rh', 3, true, 2),
+    ('fin-15k', 'Engager une dépense non budgétée de 15 k€', 'finances', 3, true, 3),
+    ('act-domaine', 'Lancer un nouveau domaine de formation (nouvelle certification, nouveau public)', 'activite', 4, true, 4),
+    ('fin-emprunt40', 'Souscrire un emprunt de 40 k€', 'finances', 4, true, 5),
+    ('com-grille', 'Fixer la grille tarifaire annuelle', 'commercial', 3, true, 6),
+    ('act-planning', 'Établir le planning des sessions et affecter les formateurs', 'activite', 1, false, 7),
+    ('act-interv', 'Faire appel à un intervenant extérieur déjà référencé', 'activite', 1, false, 8),
+    ('act-qualiopi', 'Mener les démarches Qualiopi courantes et préparer les audits', 'activite', 1, false, 9),
+    ('act-nouvinterv', 'Référencer un nouvel intervenant extérieur', 'activite', 2, false, 10),
+    ('act-soustrait', 'Sous-traiter une session à un autre organisme', 'activite', 2, false, 11),
+    ('act-formation', 'Créer une nouvelle formation dans un domaine déjà couvert', 'activite', 2, false, 12),
+    ('com-remise', 'Accorder une remise dans la fourchette validée', 'commercial', 1, false, 13),
+    ('com-horsfourch', 'Accorder une remise hors fourchette ou des conditions particulières à un gros client', 'commercial', 2, false, 14),
+    ('com-ao', 'Répondre à un appel d''offres important (plus de 50 k€ ou mobilisant fortement les équipes)', 'commercial', 3, false, 15),
+    ('com-partenariat', 'Signer un partenariat structurant ou une convention-cadre pluriannuelle', 'commercial', 4, false, 16),
+    ('rh-cdd', 'Recourir à un CDD, à l''intérim ou à un remplacement', 'rh', 2, false, 17),
+    ('rh-poste', 'Créer un poste non prévu au budget', 'rh', 4, false, 18),
+    ('rh-sanction', 'Prononcer une sanction disciplinaire', 'rh', 3, false, 19),
+    ('rh-primes', 'Attribuer des primes individuelles dans l''enveloppe votée', 'rh', 2, false, 20),
+    ('rh-politique', 'Définir la politique de rémunération, la grille salariale et l''enveloppe de primes', 'rh', 4, false, 21),
+    ('rh-remuPD', 'Toute décision concernant la rémunération ou les conditions du Président-directeur', 'rh', 4, false, 22),
+    ('fin-budgete', 'Engager une dépense prévue au budget', 'finances', 1, false, 23),
+    ('fin-5k', 'Engager une dépense non budgétée de moins de 5 k€', 'finances', 2, false, 24),
+    ('fin-invest', 'Réaliser un investissement de plus de 20 k€', 'finances', 4, false, 25),
+    ('fin-emprunt50', 'Souscrire un emprunt de 50 k€ ou plus', 'finances', 5, false, 26),
+    ('fin-banque', 'Choisir la banque, les assurances, les fournisseurs récurrents', 'finances', 2, false, 27),
+    ('fin-budget', 'Adopter le budget prévisionnel annuel', 'finances', 5, false, 28),
+    ('str-com', 'Piloter la communication externe (site, réseaux)', 'strategie', 2, false, 29),
+    ('str-plan', 'Adopter le plan stratégique pluriannuel', 'strategie', 5, false, 30),
+    ('str-site', 'Ouvrir ou fermer un site', 'strategie', 5, false, 31),
+    ('str-immo', 'Réaliser une acquisition immobilière (bâtiment de Creissels)', 'strategie', 5, false, 32),
+    ('str-filiale', 'Créer une filiale ou prendre une participation', 'strategie', 5, false, 33)
+  ) as d(key, label, domain, prop, test, position)
+ where not exists (select 1 from public.curseur_decisions x where x.session_id = s.id);
+
+-- 3. Fonctions -------------------------------------------------------
+drop function if exists public.curseur_set_reveal(text, text, boolean);
+drop function if exists public.curseur_session_info(text);
+drop function if exists public.curseur_create_session();
 
 -- =====================================================================
 -- Fonctions internes (non exposées à l'application)
@@ -503,3 +551,5 @@ grant execute on function public.curseur_update_decision(text, text, text, text,
 grant execute on function public.curseur_delete_decision(text, text, text) to anon, authenticated;
 grant execute on function public.curseur_move_decision(text, text, text, int) to anon, authenticated;
 grant execute on function public.curseur_reset(text, text) to anon, authenticated;
+
+commit;

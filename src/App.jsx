@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import { rpc, supabaseConfigured } from './supabase'
-import { LEVELS, DOMAINS, DECISIONS, TESTS } from './decisions'
+import { LEVELS, DOMAINS, DEFAULT_DECISIONS } from './decisions'
 
 // ⚠️ Tous les sous-composants sont définis HORS de App
 // (sinon perte de focus à chaque re-rendu, comme sur jury-cqp).
@@ -12,6 +12,13 @@ import { LEVELS, DOMAINS, DECISIONS, TESTS } from './decisions'
 const lv = n => `var(--l${n})`
 const fmt = n => (Number.isInteger(n) ? String(n) : n.toFixed(1).replace('.', ','))
 const plural = (n, s, p) => (n > 1 ? p : s)
+const domainName = id => DOMAINS.find(D => D.id === id)?.name || 'Autres'
+
+const PHASES = [
+  { id: 'preparation', label: 'Préparation', hint: 'Discussion. Les associés voient la liste, sans voter.' },
+  { id: 'vote', label: 'Vote ouvert', hint: 'Les associés votent. La liste est verrouillée.' },
+  { id: 'resultats', label: 'Résultats', hint: 'Les résultats sont visibles par tous.' },
+]
 
 function store(key, value) {
   try {
@@ -38,6 +45,29 @@ function sameAnswers(a, b) {
   if (!a || !b) return false
   const ka = Object.keys(a), kb = Object.keys(b)
   return ka.length === kb.length && ka.every(k => a[k] === b[k])
+}
+
+// Garde seulement les réponses dont la clé passe le test `keep`.
+// Renvoie le même objet si rien n'a changé.
+function pruneAnswers(obj, keep) {
+  if (!obj) return obj
+  const out = {}
+  let changed = false
+  for (const k of Object.keys(obj)) {
+    if (keep(k)) out[k] = obj[k]
+    else changed = true
+  }
+  return changed ? out : obj
+}
+
+// Décisions de l'atelier d'un côté, les autres par domaine (dans l'ordre de DOMAINS)
+function groupDecisions(list) {
+  const tests = list.filter(d => d.test)
+  const known = new Set(DOMAINS.map(D => D.id))
+  const groups = DOMAINS.map(D => ({ id: D.id, name: D.name, list: list.filter(d => !d.test && d.domain === D.id) }))
+  const other = list.filter(d => !d.test && !known.has(d.domain))
+  if (other.length) groups.push({ id: '_autres', name: 'Autres', list: other })
+  return { tests, groups: groups.filter(g => g.list.length) }
 }
 
 // Statistiques à partir d'un tableau [n1, n2, n3, n4, n5]
@@ -86,6 +116,19 @@ function usePolling(fn, ms, active) {
   }, [ms, active])
 }
 
+// Bouton à confirmation en deux temps : renvoie [armé ?, fonction à appeler au clic]
+function useTwoStep(ms = 4000) {
+  const [armed, setArmed] = useState(null)
+  const timer = useRef(null)
+  useEffect(() => () => clearTimeout(timer.current), [])
+  const arm = useCallback(id => {
+    clearTimeout(timer.current)
+    setArmed(id)
+    if (id !== null) timer.current = setTimeout(() => setArmed(null), ms)
+  }, [ms])
+  return [armed, arm]
+}
+
 const joinUrl = code => `${window.location.origin}${window.location.pathname}#/s/${code}`
 
 // ---------------------------------------------------------------------
@@ -125,12 +168,12 @@ function Legend() {
   )
 }
 
-function Rail({ decision, value, onPick }) {
+function Rail({ decision, value, onPick, disabled }) {
   const fillStyle = value ? { width: `${(value - 1) * 20}%`, background: lv(value) } : { width: 0 }
   return (
-    <div className="dec">
+    <div className={`dec ${disabled ? 'locked' : ''}`}>
       <p className="q">{decision.label}</p>
-      <div className="rail" role="radiogroup" aria-label={decision.label}>
+      <div className="rail" role="radiogroup" aria-label={decision.label} aria-disabled={disabled || undefined}>
         <span className="track" />
         <span className="fill" style={fillStyle} />
         {LEVELS.map(L => (
@@ -142,37 +185,43 @@ function Rail({ decision, value, onPick }) {
             aria-checked={value === L.n}
             aria-label={`Niveau ${L.n} : ${L.who}, ${L.title}`}
             style={{ '--lv': lv(L.n) }}
+            disabled={disabled}
             onClick={() => onPick(decision.id, L.n)}
           >{L.n}</button>
         ))}
       </div>
       <p className="picked">
-        {value ? <>Niveau {value} : <b>{LEVELS[value - 1].picked}</b></> : 'Pas encore de choix'}
+        {value ? <>Niveau {value} : <b>{LEVELS[value - 1].picked}</b></> : disabled ? '' : 'Pas encore de choix'}
       </p>
     </div>
   )
 }
 
-function DecisionList({ answers, onPick }) {
+function DecisionList({ decisions, answers, onPick, disabled }) {
+  const { tests, groups } = groupDecisions(decisions)
+  const domainBlocks = groups.map(g => (
+    <div key={g.id}>
+      <h3>{g.name}</h3>
+      {g.list.map(d => <Rail key={d.id} decision={d} value={answers[d.id]} onPick={onPick} disabled={disabled} />)}
+    </div>
+  ))
+  if (!decisions.length) return <div className="note quiet">Aucune décision pour l'instant.</div>
   return (
     <>
       <Legend />
-      <h2>Les 6 décisions de l'atelier</h2>
-      <p className="sub">Réponds au moins à celles-ci.</p>
-      {TESTS.map(d => <Rail key={d.id} decision={d} value={answers[d.id]} onPick={onPick} />)}
-      <details className="more">
-        <summary>Toutes les autres décisions</summary>
-        {DOMAINS.map(D => {
-          const list = DECISIONS.filter(d => !d.test && d.domain === D.id)
-          if (!list.length) return null
-          return (
-            <div key={D.id}>
-              <h3>{D.name}</h3>
-              {list.map(d => <Rail key={d.id} decision={d} value={answers[d.id]} onPick={onPick} />)}
-            </div>
-          )
-        })}
-      </details>
+      {tests.length > 0 ? (
+        <>
+          <h2>{tests.length > 1 ? `Les ${tests.length} décisions de l'atelier` : "La décision de l'atelier"}</h2>
+          <p className="sub">Réponds au moins à {plural(tests.length, 'celle-ci', 'celles-ci')}.</p>
+          {tests.map(d => <Rail key={d.id} decision={d} value={answers[d.id]} onPick={onPick} disabled={disabled} />)}
+          {groups.length > 0 && (
+            <details className="more">
+              <summary>Toutes les autres décisions</summary>
+              {domainBlocks}
+            </details>
+          )}
+        </>
+      ) : domainBlocks}
     </>
   )
 }
@@ -203,7 +252,7 @@ function ResultCard({ decision, counts }) {
       </div>
       <div className="res-foot">
         {st.n > 0 && <span>Médiane <b>{fmt(st.median)}</b></span>}
-        <span>Proposé <b>{decision.prop}</b></span>
+        {decision.prop && <span>Proposé <b>{decision.prop}</b></span>}
         {st.n > 0 && <span>Écart <b>{st.gap}</b> {plural(st.gap, 'niveau', 'niveaux')}</span>}
         {st.n > 0 && <span>{st.n} {plural(st.n, 'vote', 'votes')}</span>}
       </div>
@@ -211,44 +260,49 @@ function ResultCard({ decision, counts }) {
   )
 }
 
-function Results({ counts, voters }) {
+function Results({ decisions, counts, voters }) {
   const [scope, setScope] = useState('tests')
   const [sortGap, setSortGap] = useState(true)
   const c = counts || {}
+  const { tests, groups } = groupDecisions(decisions)
+  const hasTests = tests.length > 0
+  const showAll = scope === 'all' || !hasTests
 
   let body
   if (!voters) {
     body = <div className="note quiet">Aucun vote pour l'instant.</div>
   } else if (sortGap) {
-    const list = (scope === 'tests' ? TESTS : DECISIONS)
+    const list = (showAll ? decisions : tests)
       .map(d => ({ d, s: stats(c[d.id]) }))
       .sort((a, b) => (b.s.gap - a.s.gap) || (b.s.n - a.s.n))
     body = list.map(({ d }) => <ResultCard key={d.id} decision={d} counts={c[d.id]} />)
-  } else if (scope === 'all') {
+  } else if (showAll) {
     body = (
       <>
-        <h3>Décisions de l'atelier</h3>
-        {TESTS.map(d => <ResultCard key={d.id} decision={d} counts={c[d.id]} />)}
-        {DOMAINS.map(D => (
-          <div key={D.id}>
-            <h3>{D.name}</h3>
-            {DECISIONS.filter(d => !d.test && d.domain === D.id).map(d => <ResultCard key={d.id} decision={d} counts={c[d.id]} />)}
+        {hasTests && <h3>Décisions de l'atelier</h3>}
+        {tests.map(d => <ResultCard key={d.id} decision={d} counts={c[d.id]} />)}
+        {groups.map(g => (
+          <div key={g.id}>
+            <h3>{g.name}</h3>
+            {g.list.map(d => <ResultCard key={d.id} decision={d} counts={c[d.id]} />)}
           </div>
         ))}
       </>
     )
   } else {
-    body = TESTS.map(d => <ResultCard key={d.id} decision={d} counts={c[d.id]} />)
+    body = tests.map(d => <ResultCard key={d.id} decision={d} counts={c[d.id]} />)
   }
 
   return (
     <>
       <div className="toolbar">
         <span className="count">{voters} {plural(voters, 'votant', 'votants')}</span>
-        <div className="seg" role="group" aria-label="Décisions affichées">
-          <button aria-pressed={scope === 'tests'} onClick={() => setScope('tests')}>Atelier</button>
-          <button aria-pressed={scope === 'all'} onClick={() => setScope('all')}>Toutes</button>
-        </div>
+        {hasTests && groups.length > 0 && (
+          <div className="seg" role="group" aria-label="Décisions affichées">
+            <button aria-pressed={scope === 'tests'} onClick={() => setScope('tests')}>Atelier</button>
+            <button aria-pressed={scope === 'all'} onClick={() => setScope('all')}>Toutes</button>
+          </div>
+        )}
         <label className="check">
           <input type="checkbox" checked={sortGap} onChange={e => setSortGap(e.target.checked)} /> Les plus partagées en premier
         </label>
@@ -303,7 +357,8 @@ function Home() {
   const create = async () => {
     setBusy(true); setError('')
     try {
-      const res = await rpc('curseur_create_session')
+      const p_decisions = DEFAULT_DECISIONS.map(({ id, label, domain, prop, test }) => ({ id, label, domain, prop: prop ?? null, test: !!test }))
+      const res = await rpc('curseur_create_session', { p_decisions })
       const list = [{ code: res.code, key: res.admin_key, at: new Date().toISOString() }, ...sessions].slice(0, 10)
       store('curseur-admin-sessions', list)
       window.location.hash = `#/s/${res.code}/animateur?k=${res.admin_key}`
@@ -335,7 +390,7 @@ function Home() {
         </div>
         <div className="card">
           <h2>Animer une séance</h2>
-          <p className="sub">Crée une séance : tu obtiens un code et un QR code à projeter, et un lien animateur pour suivre et révéler les résultats.</p>
+          <p className="sub">Crée une séance : tu obtiens un code et un QR code à projeter, la liste des décisions à ajuster avec les associés, et un lien animateur pour ouvrir le vote et révéler les résultats.</p>
           <button className="btn ghost" onClick={create} disabled={busy}>{busy ? 'Création…' : 'Créer une séance'}</button>
           {sessions.length > 0 && (
             <>
@@ -362,30 +417,79 @@ function Home() {
 function VotePage({ code }) {
   const [tab, setTab] = useState('vote')
   const [status, setStatus] = useState('loading') // loading | ok | missing | error
+  const [phase, setPhase] = useState(null)
+  const [decisions, setDecisions] = useState([])
   const [answers, setAnswers] = useState({})
   const [saved, setSaved] = useState(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const [results, setResults] = useState(null)
   const token = useRef(getVoterToken(code))
+  const draftKey = `curseur-draft-${code}`
+  const answersRef = useRef(answers)
+  answersRef.current = answers
+  const labelsRef = useRef(null) // libellés vus au dernier rafraîchissement
+  const phaseRef = useRef(null)
+
+  const applySession = useCallback(s => {
+    if (!s || !s.exists) return
+    setPhase(s.phase)
+    setDecisions(s.decisions)
+  }, [])
 
   useEffect(() => {
     let cancel = false
     ;(async () => {
       try {
-        const info = await rpc('curseur_session_info', { p_code: code })
+        const s = await rpc('curseur_session', { p_code: code })
         if (cancel) return
-        if (!info.exists) { setStatus('missing'); return }
+        if (!s.exists) { setStatus('missing'); return }
         const mine = await rpc('curseur_my_vote', { p_code: code, p_token: token.current })
         if (cancel) return
-        if (mine) { setAnswers({ ...mine }); setSaved({ ...mine }) }
+        // Brouillon local (choix pas encore enregistrés) prioritaire sur le vote enregistré
+        const draft = store(draftKey)
+        if (mine) setSaved({ ...mine })
+        setAnswers({ ...(draft && typeof draft === 'object' ? draft : mine || {}) })
+        applySession(s)
         setStatus('ok')
       } catch (err) {
         if (!cancel) { setError(err.message); setStatus('error') }
       }
     })()
     return () => { cancel = true }
-  }, [code])
+  }, [code, draftKey, applySession])
+
+  // La liste et la phase se rafraîchissent toutes les 3 secondes
+  const loadSession = useCallback(async () => {
+    try { applySession(await rpc('curseur_session', { p_code: code })) } catch { /* on réessaie au prochain tour */ }
+  }, [code, applySession])
+  usePolling(loadSession, 3000, status === 'ok')
+
+  // Conserve les choix en cours, même après un rechargement de la page
+  useEffect(() => { if (status === 'ok') store(draftKey, answers) }, [answers, status, draftKey])
+
+  // Quand la liste change : on retire les choix sur les décisions supprimées
+  // ou dont le libellé a changé (leurs votes ont été effacés en base)
+  useEffect(() => {
+    if (status !== 'ok') return
+    const now = new Map(decisions.map(d => [d.id, d.label]))
+    const prev = labelsRef.current
+    labelsRef.current = now
+    const keep = k => now.has(k) && !(prev && prev.has(k) && prev.get(k) !== now.get(k))
+    const next = pruneAnswers(answersRef.current, keep)
+    if (next !== answersRef.current) {
+      setAnswers(next)
+      if (prev) setNotice("Une décision sur laquelle tu avais choisi un niveau a été modifiée ou retirée. Vérifie tes choix.")
+    }
+    setSaved(s => pruneAnswers(s, keep))
+  }, [decisions, status])
+
+  // Passage aux résultats : on les affiche directement
+  useEffect(() => {
+    if (phase === 'resultats' && phaseRef.current && phaseRef.current !== 'resultats') setTab('results')
+    phaseRef.current = phase
+  }, [phase])
 
   const loadResults = useCallback(async () => {
     try { setResults(await rpc('curseur_results', { p_code: code })) } catch { /* on réessaie au prochain tour */ }
@@ -399,6 +503,7 @@ function VotePage({ code }) {
       return next
     })
     setError('')
+    setNotice('')
   }, [])
 
   const save = async () => {
@@ -407,6 +512,7 @@ function VotePage({ code }) {
       const snapshot = { ...answers }
       await rpc('curseur_cast_vote', { p_code: code, p_token: token.current, p_answers: snapshot })
       setSaved(snapshot)
+      setNotice('')
     } catch (err) {
       setError(`Le vote n'a pas pu être enregistré : ${err.message}`)
     }
@@ -423,28 +529,41 @@ function VotePage({ code }) {
     )
   }
 
-  const t = TESTS.filter(d => answers[d.id]).length
-  const all = DECISIONS.filter(d => answers[d.id]).length
+  const open = phase === 'vote'
+  const tests = decisions.filter(d => d.test)
+  const t = tests.filter(d => answers[d.id]).length
+  const all = decisions.filter(d => answers[d.id]).length
   const unchanged = sameAnswers(answers, saved)
-  let barText = `${t} / ${TESTS.length} décisions de l'atelier${all > t ? `, ${all - t} ${plural(all - t, 'autre', 'autres')}` : ''}`
-  if (error) barText = error
+  let barText = tests.length
+    ? `${t} / ${tests.length} ${plural(tests.length, "décision de l'atelier", "décisions de l'atelier")}${all > t ? `, ${all - t} ${plural(all - t, 'autre', 'autres')}` : ''}`
+    : `${all} / ${decisions.length} ${plural(decisions.length, 'décision', 'décisions')}`
+  if (phase === 'preparation') barText = "Le vote n'est pas encore ouvert"
+  else if (phase === 'resultats') barText = 'Le vote est clos'
+  else if (error) barText = error
   else if (saving) barText = 'Enregistrement…'
   else if (unchanged && all) barText = 'Ton vote est enregistré'
 
   return (
     <>
-      <Header lede={`Séance ${code}. Ton vote est anonyme : seuls les totaux sont affichés, et tu peux le modifier jusqu'à la fin.`} />
+      <Header lede={`Séance ${code}. Ton vote est anonyme : seuls les totaux sont affichés, et tu peux le modifier jusqu'à la clôture.`} />
       <Tabs
         tabs={[{ id: 'vote', label: 'Voter' }, { id: 'results', label: 'Résultats' }, { id: 'levels', label: 'Les 5 niveaux' }]}
         active={tab}
         onChange={id => { setTab(id); window.scrollTo(0, 0) }}
       />
       <main><div className="wrap">
-        {tab === 'vote' && <DecisionList answers={answers} onPick={onPick} />}
+        {tab === 'vote' && (
+          <>
+            {phase === 'preparation' && <div className="note">Discussion en cours. La liste peut encore changer, elle se met à jour toute seule. Le vote s'ouvrira quand l'animateur le décidera.</div>}
+            {phase === 'resultats' && <div className="note quiet">Le vote est clos. Les résultats sont dans l'onglet Résultats.</div>}
+            {notice && <div className="note error">{notice}</div>}
+            <DecisionList decisions={decisions} answers={answers} onPick={onPick} disabled={!open} />
+          </>
+        )}
         {tab === 'results' && (
           !results ? <p className="sub">Chargement…</p>
           : results.counts
-            ? <Results counts={results.counts} voters={results.voters} />
+            ? <Results decisions={decisions} counts={results.counts} voters={results.voters} />
             : <div className="note quiet">{results.voters} {plural(results.voters, 'associé a voté', 'associés ont voté')}. Les résultats s'afficheront ici quand l'animateur les révélera.</div>
         )}
         {tab === 'levels' && <LevelsRef />}
@@ -452,8 +571,8 @@ function VotePage({ code }) {
       {tab === 'vote' && (
         <div className="bar-bottom"><div className="wrap">
           <p>{barText}</p>
-          <button className="btn" onClick={save} disabled={!all || saving || unchanged}>
-            {saved ? 'Mettre à jour mon vote' : 'Enregistrer mon vote'}
+          <button className="btn" onClick={save} disabled={!open || !all || saving || unchanged}>
+            {saved && Object.keys(saved).length ? 'Mettre à jour mon vote' : 'Enregistrer mon vote'}
           </button>
         </div></div>
       )}
@@ -462,45 +581,267 @@ function VotePage({ code }) {
 }
 
 // ---------------------------------------------------------------------
+// Page animateur : édition des décisions
+// ---------------------------------------------------------------------
+function PhaseControl({ phase, onSet, busy }) {
+  return (
+    <div className="phases" role="group" aria-label="Phase de la séance">
+      {PHASES.map((p, i) => (
+        <button key={p.id} type="button" aria-pressed={phase === p.id} disabled={busy} onClick={() => phase !== p.id && onSet(p.id)}>
+          <span className="step">{i + 1}</span>
+          <span className="ph-label">{p.label}</span>
+          <small>{p.hint}</small>
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function DecisionForm({ initial, votes = 0, submitLabel, onSubmit, onCancel, busy, autoFocus }) {
+  const [label, setLabel] = useState(initial.label)
+  const [domain, setDomain] = useState(initial.domain)
+  const [prop, setProp] = useState(initial.prop ? String(initial.prop) : '')
+  const [test, setTest] = useState(initial.test)
+  const [confirm, setConfirm] = useState(false)
+  const formRef = useRef(null)
+  const labelChanged = label.trim().replace(/\s+/g, ' ') !== initial.label
+  const needsConfirm = votes > 0 && labelChanged
+
+  const submit = async e => {
+    e.preventDefault()
+    if (!label.trim()) return
+    if (needsConfirm && !confirm) { setConfirm(true); return }
+    const ok = await onSubmit({ label: label.trim(), domain, prop: prop ? Number(prop) : null, test })
+    if (ok && !initial.label) { setLabel(''); setConfirm(false) }
+  }
+
+  return (
+    <form className="ed-form" onSubmit={submit} ref={formRef}>
+      <label className="field">
+        <span>Décision</span>
+        <textarea
+          rows={2}
+          value={label}
+          maxLength={300}
+          autoFocus={autoFocus}
+          placeholder="Ex. : Changer de logiciel de gestion"
+          onChange={e => { setLabel(e.target.value); setConfirm(false) }}
+          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); formRef.current.requestSubmit() } }}
+        />
+      </label>
+      <div className="ed-fields">
+        <label className="field">
+          <span>Domaine</span>
+          <select value={domain} onChange={e => setDomain(e.target.value)}>
+            {DOMAINS.map(D => <option key={D.id} value={D.id}>{D.name}</option>)}
+            {!DOMAINS.some(D => D.id === domain) && <option value={domain}>{domainName(domain)}</option>}
+          </select>
+        </label>
+        <label className="field">
+          <span>Niveau proposé</span>
+          <select value={prop} onChange={e => setProp(e.target.value)}>
+            <option value="">Aucun</option>
+            {LEVELS.map(L => <option key={L.n} value={L.n}>{L.n} : {L.who.toLowerCase()}, {L.title.toLowerCase()}</option>)}
+          </select>
+        </label>
+        <label className="check">
+          <input type="checkbox" checked={test} onChange={e => setTest(e.target.checked)} /> Décision de l'atelier
+        </label>
+      </div>
+      {confirm && (
+        <p className="warn-line">Le libellé change : {votes} {plural(votes, 'vote enregistré sur cette décision sera effacé', 'votes enregistrés sur cette décision seront effacés')}.</p>
+      )}
+      <div className="actions">
+        <button className={`btn ${confirm ? 'danger arm' : ''}`} type="submit" disabled={busy || !label.trim()}>
+          {confirm ? 'Confirmer et effacer les votes' : submitLabel}
+        </button>
+        {onCancel && <button className="btn ghost" type="button" onClick={onCancel}>Annuler</button>}
+      </div>
+    </form>
+  )
+}
+
+function EditorRow({ d, first, last, editable, showProps, showDomain, busy, editing, armed, onEdit, onCancel, onSave, onMove, onDelete }) {
+  if (editing) {
+    return (
+      <div className="ed-row editing">
+        <DecisionForm initial={d} votes={d.votes} submitLabel="Enregistrer" onSubmit={onSave} onCancel={onCancel} busy={busy} autoFocus />
+      </div>
+    )
+  }
+  return (
+    <div className="ed-row">
+      <div className="ed-main">
+        <p className="ed-label">{d.label}</p>
+        <p className="ed-meta">
+          {showDomain && <span className="tag">{domainName(d.domain)}</span>}
+          {showProps && d.prop && <span className="pill" style={{ '--lv': lv(d.prop) }}>Proposé {d.prop}</span>}
+          {d.votes > 0 && <span className="tag">{d.votes} {plural(d.votes, 'vote', 'votes')}</span>}
+        </p>
+        {armed && d.votes > 0 && <p className="warn-line">{d.votes} {plural(d.votes, 'vote sera effacé', 'votes seront effacés')}.</p>}
+      </div>
+      {editable && (
+        <div className="ed-tools">
+          <button className="icon-btn" type="button" aria-label="Monter" title="Monter" disabled={busy || first} onClick={() => onMove(-1)}>↑</button>
+          <button className="icon-btn" type="button" aria-label="Descendre" title="Descendre" disabled={busy || last} onClick={() => onMove(1)}>↓</button>
+          <button className="icon-btn" type="button" aria-label="Modifier" title="Modifier" disabled={busy} onClick={onEdit}>✎</button>
+          <button className={`btn danger small ${armed ? 'arm' : ''}`} type="button" disabled={busy} onClick={onDelete}>
+            {armed ? 'Confirmer' : 'Supprimer'}
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function Editor({ decisions, phase, busy, act, onPhase }) {
+  const [editing, setEditing] = useState(null)
+  const [adding, setAdding] = useState(false)
+  const [showProps, setShowProps] = useState(() => store('curseur-show-props') === true)
+  const [armed, arm] = useTwoStep()
+  const editable = phase === 'preparation'
+  const { tests, groups } = groupDecisions(decisions)
+
+  useEffect(() => { store('curseur-show-props', showProps) }, [showProps])
+  useEffect(() => { if (!editable) { setEditing(null); setAdding(false); arm(null) } }, [editable, arm])
+
+  const save = d => async values => {
+    const ok = await act('curseur_update_decision', { p_key: d.id, p_label: values.label, p_domain: values.domain, p_prop: values.prop, p_test: values.test })
+    if (ok) setEditing(null)
+    return ok
+  }
+  const add = values => act('curseur_add_decision', { p_label: values.label, p_domain: values.domain, p_prop: values.prop, p_test: values.test })
+  const remove = d => async () => {
+    if (armed !== d.id) { arm(d.id); return }
+    arm(null)
+    await act('curseur_delete_decision', { p_key: d.id })
+  }
+
+  const block = (list, withDomain) => list.map((d, i) => (
+    <EditorRow
+      key={d.id}
+      d={d}
+      first={i === 0}
+      last={i === list.length - 1}
+      editable={editable}
+      showProps={showProps}
+      showDomain={withDomain}
+      busy={busy}
+      editing={editing === d.id}
+      armed={armed === d.id}
+      onEdit={() => { setEditing(d.id); arm(null) }}
+      onCancel={() => setEditing(null)}
+      onSave={save(d)}
+      onMove={dir => act('curseur_move_decision', { p_key: d.id, p_dir: dir })}
+      onDelete={remove(d)}
+    />
+  ))
+
+  return (
+    <div className="editor">
+      <div className="toolbar">
+        <span className="count">{decisions.length} {plural(decisions.length, 'décision', 'décisions')}</span>
+        <label className="check">
+          <input type="checkbox" checked={showProps} onChange={e => setShowProps(e.target.checked)} /> Afficher les niveaux proposés
+        </label>
+      </div>
+      {showProps && <div className="note">Niveaux proposés visibles : ne projette pas cet écran tant que la case est cochée.</div>}
+      {!editable && (
+        <div className="note quiet">
+          La liste est verrouillée pendant le vote et les résultats.
+          <div className="actions"><button className="btn ghost" type="button" disabled={busy} onClick={() => onPhase('preparation')}>Repasser en préparation</button></div>
+        </div>
+      )}
+
+      {!decisions.length && <div className="note quiet">Aucune décision. Ajoute la première ci-dessous.</div>}
+      {tests.length > 0 && (
+        <>
+          <h2>Décisions de l'atelier</h2>
+          {block(tests, true)}
+        </>
+      )}
+      {groups.map(g => (
+        <div key={g.id}>
+          <h2>{g.name}</h2>
+          {block(g.list, false)}
+        </div>
+      ))}
+
+      {editable && (
+        adding ? (
+          <div className="card add-card">
+            <h2>Ajouter une décision</h2>
+            <DecisionForm
+              initial={{ label: '', domain: DOMAINS[0].id, prop: null, test: false }}
+              submitLabel="Ajouter"
+              onSubmit={add}
+              onCancel={() => setAdding(false)}
+              busy={busy}
+              autoFocus
+            />
+          </div>
+        ) : (
+          <div className="actions">
+            <button className="btn ghost" type="button" onClick={() => { setAdding(true); setEditing(null) }}>+ Ajouter une décision</button>
+            <button className="btn" type="button" disabled={busy || !decisions.length} onClick={() => onPhase('vote')}>Ouvrir le vote</button>
+          </div>
+        )
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------
 // Page animateur
 // ---------------------------------------------------------------------
 function AdminPage({ code, adminKey }) {
   const [data, setData] = useState(null)
+  const [loadError, setLoadError] = useState('')
   const [error, setError] = useState('')
-  const [armed, setArmed] = useState(false)
+  const [busy, setBusy] = useState(false)
   const [copied, setCopied] = useState(false)
   const [tab, setTab] = useState('session')
-  const armTimer = useRef(null)
+  const [armedReset, armReset] = useTwoStep()
   const url = joinUrl(code)
 
   const load = useCallback(async () => {
-    try { setData(await rpc('curseur_results', { p_code: code, p_admin_key: adminKey || null })) }
-    catch (err) { setError(err.message) }
+    try {
+      const params = { p_code: code, p_admin_key: adminKey || null }
+      const [res, s] = await Promise.all([rpc('curseur_results', params), rpc('curseur_session', params)])
+      setData({ ...res, phase: s.phase, decisions: s.decisions || [] })
+      setLoadError('')
+    } catch (err) { setLoadError(err.message) }
   }, [code, adminKey])
   usePolling(load, 3000, true)
 
-  const toggleReveal = async () => {
-    try { await rpc('curseur_set_reveal', { p_code: code, p_admin_key: adminKey, p_revealed: !data.revealed }); load() }
-    catch (err) { setError(err.message) }
-  }
+  // Action animateur : renvoie true si elle a réussi
+  const act = useCallback(async (fn, params = {}) => {
+    setBusy(true); setError('')
+    try {
+      await rpc(fn, { p_code: code, p_admin_key: adminKey, ...params })
+      await load()
+      return true
+    } catch (err) {
+      setError(err.message)
+      return false
+    } finally {
+      setBusy(false)
+    }
+  }, [code, adminKey, load])
+
+  const setPhase = useCallback(p => act('curseur_set_phase', { p_phase: p }), [act])
 
   const reset = async () => {
-    if (!armed) {
-      setArmed(true)
-      clearTimeout(armTimer.current)
-      armTimer.current = setTimeout(() => setArmed(false), 4000)
-      return
-    }
-    setArmed(false)
-    try { await rpc('curseur_reset', { p_code: code, p_admin_key: adminKey }); load() }
-    catch (err) { setError(err.message) }
+    if (!armedReset) { armReset(true); return }
+    armReset(null)
+    await act('curseur_reset')
   }
 
   const copy = async () => {
     try { await navigator.clipboard.writeText(url); setCopied(true); setTimeout(() => setCopied(false), 2000) } catch { /* rien */ }
   }
 
-  if (!data) return <><Header title="Animation" /><main><div className="wrap">{error ? <div className="note error">{error}</div> : <p className="sub">Chargement…</p>}</div></main></>
+  if (!data) return <><Header title="Animation" /><main><div className="wrap">{loadError ? <div className="note error">{loadError}</div> : <p className="sub">Chargement…</p>}</div></main></>
   if (!data.exists || !data.is_admin) {
     return (
       <><Header title="Animation" /><main><div className="wrap">
@@ -512,14 +853,15 @@ function AdminPage({ code, adminKey }) {
 
   return (
     <>
-      <Header title="Animation" lede="Garde ce lien pour toi : c'est lui qui permet de suivre et de révéler les résultats." />
+      <Header title="Animation" lede="Garde ce lien pour toi : c'est lui qui permet de modifier la liste, d'ouvrir le vote et de révéler les résultats." />
       <Tabs
-        tabs={[{ id: 'session', label: 'Séance' }, { id: 'results', label: 'Résultats' }, { id: 'levels', label: 'Les 5 niveaux' }]}
+        tabs={[{ id: 'session', label: 'Séance' }, { id: 'decisions', label: 'Décisions' }, { id: 'results', label: 'Résultats' }, { id: 'levels', label: 'Les 5 niveaux' }]}
         active={tab}
         onChange={id => { setTab(id); window.scrollTo(0, 0) }}
       />
-      <main><div className="wrap">
+      <main><div className={`wrap ${tab === 'decisions' ? 'wide' : ''}`}>
         {error && <div className="note error">{error}</div>}
+        {loadError && <div className="note error">Connexion perdue : {loadError}</div>}
         {tab === 'session' && (
           <>
             <div className="panel">
@@ -535,23 +877,23 @@ function AdminPage({ code, adminKey }) {
               </div>
             </div>
             <div className="card">
+              <h2>Phase de la séance</h2>
+              <PhaseControl phase={data.phase} onSet={setPhase} busy={busy} />
               <p className="voters">{data.voters} {plural(data.voters, 'votant', 'votants')}</p>
               <p className="sub">Le compteur se met à jour toutes les 3 secondes.</p>
               <div className="actions">
-                <button className={`btn ${data.revealed ? 'ghost' : ''}`} onClick={toggleReveal}>
-                  {data.revealed ? 'Masquer les résultats aux associés' : 'Révéler les résultats à tous'}
-                </button>
-                <button className={`btn danger ${armed ? 'arm' : ''}`} onClick={reset}>
-                  {armed ? 'Confirmer : effacer tous les votes' : 'Effacer tous les votes'}
+                <button className={`btn danger ${armedReset ? 'arm' : ''}`} onClick={reset} disabled={busy}>
+                  {armedReset ? 'Confirmer : effacer tous les votes' : 'Effacer tous les votes'}
                 </button>
               </div>
             </div>
           </>
         )}
+        {tab === 'decisions' && <Editor decisions={data.decisions} phase={data.phase} busy={busy} act={act} onPhase={setPhase} />}
         {tab === 'results' && (
           <>
-            {!data.revealed && <div className="note">Tu es seul à voir ces résultats. Révèle-les depuis l'onglet Séance quand tout le monde a voté.</div>}
-            <Results counts={data.counts} voters={data.voters} />
+            {data.phase !== 'resultats' && <div className="note">Tu es seul à voir ces résultats. Passe en phase Résultats depuis l'onglet Séance quand tout le monde a voté.</div>}
+            <Results decisions={data.decisions} counts={data.counts} voters={data.voters} />
           </>
         )}
         {tab === 'levels' && <LevelsRef />}
