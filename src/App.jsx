@@ -316,12 +316,7 @@ function Results({ decisions, counts, voters }) {
 function LevelsRef() {
   return (
     <>
-      <h2 style={{ marginTop: '.4rem' }}>Une personne, deux casquettes</h2>
-      <div className="rule">
-        <p className="test-q">« J'applique un cadre déjà validé, ou je fixe ce cadre ? »</p>
-        <p>Appliquer le cadre (budget voté, plan de formation, grille tarifaire), c'est la casquette du directeur. Engager la SCOP au-delà de ce cadre, c'est la casquette du Président, avec les contrôles qui vont avec.</p>
-      </div>
-      <h2>Les 5 niveaux</h2>
+      <h2 style={{ marginTop: '.4rem' }}>Les 5 niveaux</h2>
       {LEVELS.map(L => (
         <div className="lvl" key={L.n} style={{ '--lv': lv(L.n) }}>
           <div className="num">{L.n}</div>
